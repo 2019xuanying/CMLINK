@@ -8,6 +8,7 @@ import os
 import sys
 import traceback
 import asyncio
+# from bs4 import BeautifulSoup  <-- 已移除此行，避免报错
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
@@ -37,22 +38,20 @@ PRODUCT_ID = '974'
 URLS = {
     "entry": "https://www.yanci.com.tw/register",
     "register": "https://www.yanci.com.tw/storeregd",
-    "send_verify": "https://www.yanci.com.tw/sendvcurl", # 后续需拼接ID
+    "send_verify": "https://www.yanci.com.tw/sendvcurl", 
     "login": "https://www.yanci.com.tw/login",
     "update": "https://www.yanci.com.tw/updateopt",
     "order": "https://www.yanci.com.tw/gives"
 }
 
-# 伪装浏览器 Header
+# [关键修复]：严格对齐 yanci_final_v4.py 的 Headers
+# 移除了 'Upgrade-Insecure-Requests'，防止 AJAX 请求被识别为页面访问
 HEADERS_BASE = {
     'Host': 'www.yanci.com.tw',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Content-Type': 'application/x-www-form-urlencoded',
     'Origin': 'https://www.yanci.com.tw',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
 }
 
 # ================= 逻辑工具类 =================
@@ -66,8 +65,7 @@ class YanciBotLogic:
 
     @staticmethod
     def generate_random_name():
-        """生成随机姓名（包含中文和英文，增加随机性）"""
-        # 30% 概率生成英文名，70% 概率生成中文名
+        """生成随机姓名"""
         if random.random() < 0.3:
             first_names_en = ["James", "John", "Robert", "Michael", "David", "William", "Richard", "Joseph", "Thomas", "Charles", "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth", "Barbara", "Susan", "Jessica", "Sarah", "Karen"]
             last_names_en = ["Smith", "Johnson", "Williams", "Jones", "Brown", "Davis", "Miller", "Wilson", "Moore", "Taylor", "Anderson", "Thomas", "Jackson", "White", "Harris"]
@@ -80,32 +78,22 @@ class YanciBotLogic:
     @staticmethod
     def generate_random_address():
         """生成随机但合法的台湾地址结构"""
-        # 台湾主要县市及其常用行政区与邮编
         locations = [
             {"city": "臺北市", "area": "信義區", "zip": "110"},
             {"city": "臺北市", "area": "大安區", "zip": "106"},
-            {"city": "臺北市", "area": "中山區", "zip": "104"},
             {"city": "新北市", "area": "板橋區", "zip": "220"},
-            {"city": "新北市", "area": "中和區", "zip": "235"},
-            {"city": "新北市", "area": "新莊區", "zip": "242"},
             {"city": "桃園市", "area": "桃園區", "zip": "330"},
-            {"city": "桃園市", "area": "中壢區", "zip": "320"},
             {"city": "臺中市", "area": "西屯區", "zip": "407"},
-            {"city": "臺中市", "area": "北屯區", "zip": "406"},
             {"city": "臺南市", "area": "東區", "zip": "701"},
-            {"city": "臺南市", "area": "永康區", "zip": "710"},
             {"city": "高雄市", "area": "左營區", "zip": "813"},
-            {"city": "高雄市", "area": "三民區", "zip": "807"},
         ]
-        
-        # 常见路名库
-        roads = ["中正路", "中山路", "中華路", "建國路", "復興路", "三民路", "民生路", "信義路", "和平路", "成功路", "文化路", "民族路"]
+        roads = ["中正路", "中山路", "中華路", "建國路", "復興路", "三民路", "民生路", "信義路"]
         
         loc = random.choice(locations)
         road = random.choice(roads)
-        section = f"{random.randint(1, 5)}段" if random.random() > 0.5 else "" # 50%概率有段号
+        section = f"{random.randint(1, 5)}段" if random.random() > 0.5 else ""
         no = f"{random.randint(1, 500)}號"
-        floor = f"{random.randint(2, 20)}樓" if random.random() > 0.3 else "" # 70%概率有楼层
+        floor = f"{random.randint(2, 20)}樓" if random.random() > 0.3 else ""
         
         full_addr = f"{road}{section}{no}{floor}"
         
@@ -118,69 +106,62 @@ class YanciBotLogic:
 
     @staticmethod
     def extract_id(text_or_url):
-        """从 URL 或 HTML 文本中提取 ID (vc=Y&xxxxx)"""
-        # 匹配 URL 参数形式: &12345 或 ?12345
         match_url = re.search(r'[&?](\d{5})(?:$|&)', text_or_url)
-        if match_url:
-            return match_url.group(1)
+        if match_url: return match_url.group(1)
         
-        # 匹配 HTML 中的特定模式 vc=Y&12345
         match_html = re.search(r'vc=Y(?:&amp;|&)(\d{5})', text_or_url)
-        if match_html:
-            return match_html.group(1)
+        if match_html: return match_html.group(1)
             
         return None
 
     @staticmethod
+    def extract_text_from_html(html_content):
+        """尝试从 HTML 中提取有用的提示信息"""
+        try:
+            # 简单的正则提取 alert('xxx') 内容
+            alert_match = re.search(r"alert\(['\"](.*?)['\"]\)", html_content)
+            if alert_match:
+                return f"弹窗提示: {alert_match.group(1)}"
+            
+            # 提取 body 文本 (简单版)
+            clean_text = re.sub('<[^<]+?>', '', html_content).strip()
+            # 截取一部分，防止太长
+            return clean_text[:100].replace('\n', ' ')
+        except:
+            return "无法解析页面内容"
+
+    @staticmethod
     def get_initial_session():
-        """初始化会话并获取第一个 ID"""
         session = requests.Session()
         session.headers.update(HEADERS_BASE)
-        
         try:
-            logger.info("正在访问入口页面获取初始 ID...")
+            # 这里的 get 需要 allow_redirects=True 才能获取到跳转后的 ID
             resp = session.get(URLS['entry'] + "?lg=tw", timeout=15, allow_redirects=True)
-            
-            # 1. 尝试从最终 URL 获取
-            found_id = YanciBotLogic.extract_id(resp.url)
-            
-            # 2. 尝试从 HTML 内容获取
-            if not found_id:
-                found_id = YanciBotLogic.extract_id(resp.text)
+            found_id = YanciBotLogic.extract_id(resp.url) or YanciBotLogic.extract_id(resp.text)
             
             if found_id:
                 logger.info(f"成功获取 ID: {found_id}")
                 return session, found_id, "成功"
             else:
-                # 备用：生成随机 ID (虽然这步成功率低，但好过没有)
                 random_id = str(random.randint(20000, 30000))
                 logger.warning(f"未找到 ID，使用随机 ID: {random_id}")
                 return session, random_id, "随机生成"
-                
         except Exception as e:
-            logger.error(f"初始化连接失败: {e}")
             return None, None, f"网络错误: {str(e)}"
 
     @staticmethod
     def register_loop(session, email, phone, start_id):
-        """核心注册循环：支持 ID 自动纠错重试"""
         current_id = start_id
         max_retries = 3
         
         for attempt in range(max_retries):
             logger.info(f"注册尝试 {attempt+1}/{max_retries} (ID: {current_id}) -> {email}")
             
-            # 构造注册 Payload
             payload = {
-                'userMode': 'normal',
-                'userACC': email,
-                'userPWD': FIXED_PASSWORD,
-                'userPhn': phone,
-                'userChk': 'true',  # 关键参数
-                'userPage': ''
+                'userMode': 'normal', 'userACC': email, 'userPWD': FIXED_PASSWORD,
+                'userPhn': phone, 'userChk': 'true', 'userPage': ''
             }
             
-            # 这里的 Referer 必须带上当前的 ID
             headers = HEADERS_BASE.copy()
             headers['Referer'] = f"{URLS['entry']}?lg=tw&vc=Y&{current_id}"
             
@@ -188,10 +169,7 @@ class YanciBotLogic:
                 resp = session.post(URLS['register'], headers=headers, data=payload, timeout=20)
                 resp.encoding = 'utf-8'
                 
-                # 情况 A: 成功 (通常是 JSON 格式，或者状态码 200 且无 HTML 错误页)
-                # 注意：有些服务器成功时不返回 JSON，而是空或者特定文本，这里主要通过是否包含错误特征来判断
-                
-                # 检查 JSON 错误返回
+                # 检查 JSON 错误
                 try:
                     res_json = resp.json()
                     if isinstance(res_json, list) and len(res_json) > 0:
@@ -201,41 +179,32 @@ class YanciBotLogic:
                             if "唯一" in msg or "重複" in msg or "重复" in msg:
                                 return True, current_id, "账号已存在(视为成功)"
                             return False, current_id, f"服务器拒绝: {msg}"
-                except ValueError:
-                    # 不是 JSON，可能是 HTML
+                except:
                     pass
 
-                # 情况 B: 失败，返回了 HTML 页面 (通常意味着 ID 不对，服务器重定向回注册页)
+                # HTML 错误 / ID 纠错
                 if "<!DOCTYPE html>" in resp.text or "vc=Y" in resp.text:
-                    # 尝试从返回的 HTML 中提取新的正确 ID
-                    new_id = YanciBotLogic.extract_id(resp.text)
-                    if not new_id:
-                        # 看看 URL 有没有变
-                        new_id = YanciBotLogic.extract_id(resp.url)
-                        
+                    new_id = YanciBotLogic.extract_id(resp.text) or YanciBotLogic.extract_id(resp.url)
                     if new_id and new_id != current_id:
                         logger.info(f"检测到 ID 变更 (旧: {current_id} -> 新: {new_id})，准备重试...")
                         current_id = new_id
-                        time.sleep(1) # 稍作休息
-                        continue # 进入下一次循环重试
+                        time.sleep(1)
+                        continue
                     else:
                         return False, current_id, "注册被拒绝且无法获取新ID"
 
-                # 如果状态码 200 且没有明显的错误特征，我们假设成功
                 if resp.status_code == 200:
                     return True, current_id, "注册请求已发送"
                 
                 return False, current_id, f"HTTP状态异常: {resp.status_code}"
 
             except Exception as e:
-                logger.error(f"注册请求异常: {e}")
                 return False, current_id, f"请求异常: {str(e)}"
         
         return False, current_id, "超过最大重试次数"
 
     @staticmethod
     def send_verify_email(session, verify_id):
-        """发送验证邮件"""
         url = f"{URLS['send_verify']}{verify_id}"
         headers = HEADERS_BASE.copy()
         headers['Referer'] = f"{URLS['entry']}?lg=tw&vc=Y&{verify_id}"
@@ -252,17 +221,15 @@ class YanciBotLogic:
 
     @staticmethod
     def login(session, email):
-        """登录"""
         headers = HEADERS_BASE.copy()
         headers['Referer'] = URLS['login']
         headers['X-Requested-With'] = 'XMLHttpRequest'
+        # [关键修复] 严格对齐 yanci_final_v4.py 的 Accept，模拟 jQuery
+        headers['Accept'] = 'application/json, text/javascript, */*; q=0.01'
         
         payload = {
-            'userMode': 'normal',
-            'userACC': email,
-            'userPWD': FIXED_PASSWORD,
-            'userRem': 'true',
-            'userPage': ''
+            'userMode': 'normal', 'userACC': email, 'userPWD': FIXED_PASSWORD,
+            'userRem': 'true', 'userPage': ''
         }
         try:
             resp = session.post(URLS['login'], headers=headers, data=payload, timeout=20)
@@ -274,28 +241,22 @@ class YanciBotLogic:
 
     @staticmethod
     def update_profile(session, phone):
-        """更新个人资料（使用随机生成的数据）"""
-        # 生成随机数据
         name = YanciBotLogic.generate_random_name()
         addr_data = YanciBotLogic.generate_random_address()
-        sex = '男性' if random.random() > 0.5 else '女性' # 随机性别
+        sex = '男性' if random.random() > 0.5 else '女性'
         
         headers = HEADERS_BASE.copy()
         headers['Referer'] = 'https://www.yanci.com.tw/member_edit'
         headers['X-Requested-With'] = 'XMLHttpRequest'
+        # 注意：这里保持默认 Accept 即可，原代码就是 copy()
         
         payload = {
-            'userName': name,
-            'userSex': sex,
-            'userPhn': phone,
-            'userTel': phone,
-            'userZip': addr_data['zip'],
-            'userCity': addr_data['city'],
-            'userArea': addr_data['area'],
-            'userAddr': addr_data['addr']
+            'userName': name, 'userSex': sex, 'userPhn': phone, 'userTel': phone,
+            'userZip': addr_data['zip'], 'userCity': addr_data['city'],
+            'userArea': addr_data['area'], 'userAddr': addr_data['addr']
         }
         
-        logger.info(f"正在更新资料: {name} | {addr_data['city']}{addr_data['area']}{addr_data['addr']}")
+        logger.info(f"正在更新资料: {name} | {addr_data['city']}{addr_data['area']}")
         
         try:
             resp = session.post(URLS['update'], headers=headers, data=payload, timeout=20)
@@ -305,22 +266,58 @@ class YanciBotLogic:
 
     @staticmethod
     def place_order(session):
-        """下单"""
+        time.sleep(1.0) # 稍微等待
+
+        # [关键修复] 完全移除多余的预访问，直接对齐原代码逻辑
+        # headers 严格对齐原代码
         headers = HEADERS_BASE.copy()
         headers['Referer'] = 'https://www.yanci.com.tw/product_give'
         headers['X-Requested-With'] = 'XMLHttpRequest'
         
+        # 确保没有 Upgrade-Insecure-Requests (虽然 HEADERS_BASE 已经移除了，这里双重保险)
+        if 'Upgrade-Insecure-Requests' in headers:
+            del headers['Upgrade-Insecure-Requests']
+
         payload = {'given': PRODUCT_ID, 'giveq': '1'}
         try:
             resp = session.post(URLS['order'], headers=headers, data=payload, timeout=20)
             resp.encoding = 'utf-8'
             
-            # 判断逻辑：如果被重定向回 login 或 title 包含登录，说明 Session 失效
-            if "login" in resp.url or "會員登入" in resp.text:
-                return False, "登录失效，无法下单"
-            
+            logger.info(f"下单接口返回: Status={resp.status_code} | Body Len={len(resp.text)}")
+
+            # 1. 优先尝试解析 JSON (成功情况)
+            try:
+                res_json = resp.json()
+                if isinstance(res_json, list) and len(res_json) > 0:
+                    data = res_json[0]
+                    code = str(data.get('code', ''))
+                    msg = data.get('msg', '无返回信息')
+                    if code == '200':
+                        return True, f"下单成功: {msg}"
+                    elif code == '400':
+                        return False, f"服务器拒绝: {msg}"
+            except:
+                pass # 不是 JSON，继续往下
+
+            # 2. 处理 HTML 返回 (通常是失败/重定向)
             if resp.status_code == 200:
-                return True, "下单请求发送成功"
+                if "<!DOCTYPE html>" in resp.text or "<html" in resp.text:
+                    # 尝试解析页面里的具体信息
+                    title_match = re.search(r'<title>(.*?)</title>', resp.text, re.IGNORECASE)
+                    page_title = title_match.group(1) if title_match else "未知页面"
+                    
+                    # 提取页面里的 alert 内容，看看服务器说了什么
+                    page_text = YanciBotLogic.extract_text_from_html(resp.text)
+                    logger.warning(f"下单返回 HTML: 标题={page_title}, 内容={page_text}")
+                    
+                    # [修复] 增加对 '登入' 的模糊匹配，无论是标题还是内容
+                    if "登入" in page_title or "Login" in page_title or "登入" in page_text:
+                        return False, "下单失败: 会话失效(需重登录)"
+                    
+                    return False, f"服务器返回页面: {page_title} (可能是: {page_text})"
+                
+                return True, "请求发送成功 (未返回错误)"
+                
             return False, f"HTTP {resp.status_code}"
         except Exception as e:
             return False, str(e)
@@ -329,7 +326,7 @@ class YanciBotLogic:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 **Yanci 自动助手 (V12.2 资料随机化版)**\n\n"
+        "👋 **Yanci 自动助手 (V12.6 自动重连版)**\n\n"
         "指令列表：\n"
         "`/new <邮箱>` - 开始新任务 (自动注册->发信)\n\n"
         "示例：`/new test@example.com`",
@@ -347,23 +344,18 @@ async def new_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         msg = await update.message.reply_text(f"🚀 初始化任务...\n邮箱: `{email}`\n手机: `{phone}`", parse_mode='Markdown')
 
-        # 1. 获取 ID 和 Session
-        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
         session, verify_id, init_msg = await asyncio.get_running_loop().run_in_executor(None, YanciBotLogic.get_initial_session)
         
         if not session or not verify_id:
             await msg.edit_text(f"❌ 初始化失败: {init_msg}")
             return
             
-        # 保存到 context，供后续步骤使用
         context.user_data['session'] = session
         context.user_data['email'] = email
         context.user_data['phone'] = phone
         
         await msg.edit_text(f"✅ 获取 ID: {verify_id}\n⏳ 正在执行智能注册 (可能需要尝试多次)...")
 
-        # 2. 执行注册循环
-        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
         reg_success, final_id, reg_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.register_loop, session, email, phone, verify_id
         )
@@ -372,13 +364,10 @@ async def new_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ 注册失败: {reg_msg}")
             return
 
-        # 更新最终使用的 ID (可能在注册过程中变了)
         context.user_data['verify_id'] = final_id
         
-        # 3. 发送验证信
         await msg.edit_text(f"✅ 注册通过 (最终ID: {final_id})\n⏳ 正在申请验证邮件...")
         
-        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
         send_success, send_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.send_verify_email, session, final_id
         )
@@ -387,7 +376,6 @@ async def new_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ 发信失败: {send_msg}")
             return
 
-        # 4. 展示交互按钮
         keyboard = [
             [InlineKeyboardButton("✅ 我已点击邮件链接验证", callback_data="verify_done")],
             [InlineKeyboardButton("❌ 取消", callback_data="cancel_task")]
@@ -424,8 +412,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text("⏳ 正在登录...")
 
-        # 1. 登录
-        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
         login_success, login_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.login, session, email
         )
@@ -433,9 +419,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ {login_msg}\n(如果刚验证完，请稍等几秒再试，或检查是否真验证成功)")
             return
 
-        # 2. 完善资料
         await query.edit_message_text("✅ 登录成功，正在生成并完善随机资料...")
-        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
         update_success, name = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.update_profile, session, phone
         )
@@ -444,12 +428,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ 资料保存失败，停止下单。")
             return
 
-        # 3. 下单
         await query.edit_message_text(f"✅ 资料已保存 (姓名: {name})\n⏳ 正在尝试下单...")
-        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
         order_success, order_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.place_order, session
         )
+
+        # [新增] 自动重试机制：如果是因为登录失效，则尝试重新登录一次
+        if not order_success and ("登入" in order_msg or "失效" in order_msg):
+             await query.edit_message_text(f"⚠️ 会话闪断，正在自动重新登录补救...")
+             
+             # 重新登录
+             relogin_success, relogin_msg = await asyncio.get_running_loop().run_in_executor(
+                None, YanciBotLogic.login, session, email
+             )
+             
+             if relogin_success:
+                 await query.edit_message_text(f"✅ 补救登录成功，正在重试下单...")
+                 # 重新下单
+                 order_success, order_msg = await asyncio.get_running_loop().run_in_executor(
+                    None, YanciBotLogic.place_order, session
+                 )
+             else:
+                 order_msg = f"自动重连失败: {relogin_msg}"
         
         if order_success:
             await query.edit_message_text(
