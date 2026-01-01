@@ -3,7 +3,7 @@
 # ================= 配置区 =================
 # ⚠️ 请务必修改这里！替换为你 GitHub 仓库的 "Raw" 基础地址
 # 这里的地址应该指向你存放 server_yanci_bot.py 和 requirements.txt 的目录
-REPO_URL="https://raw.githubusercontent.com/2019xuanying/WSS-panel-TG/main"
+REPO_URL="https://raw.githubusercontent.com/2019xuanying/CMLINK/main"
 # 安装路径
 INSTALL_DIR="/root/yanci_bot"
 
