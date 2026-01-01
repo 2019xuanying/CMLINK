@@ -348,7 +348,8 @@ async def new_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"🚀 初始化任务...\n邮箱: `{email}`\n手机: `{phone}`", parse_mode='Markdown')
 
         # 1. 获取 ID 和 Session
-        session, verify_id, init_msg = await context.application.loop.run_in_executor(None, YanciBotLogic.get_initial_session)
+        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
+        session, verify_id, init_msg = await asyncio.get_running_loop().run_in_executor(None, YanciBotLogic.get_initial_session)
         
         if not session or not verify_id:
             await msg.edit_text(f"❌ 初始化失败: {init_msg}")
@@ -362,7 +363,8 @@ async def new_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ 获取 ID: {verify_id}\n⏳ 正在执行智能注册 (可能需要尝试多次)...")
 
         # 2. 执行注册循环
-        reg_success, final_id, reg_msg = await context.application.loop.run_in_executor(
+        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
+        reg_success, final_id, reg_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.register_loop, session, email, phone, verify_id
         )
         
@@ -376,7 +378,8 @@ async def new_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 3. 发送验证信
         await msg.edit_text(f"✅ 注册通过 (最终ID: {final_id})\n⏳ 正在申请验证邮件...")
         
-        send_success, send_msg = await context.application.loop.run_in_executor(
+        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
+        send_success, send_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.send_verify_email, session, final_id
         )
         
@@ -422,7 +425,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ 正在登录...")
 
         # 1. 登录
-        login_success, login_msg = await context.application.loop.run_in_executor(
+        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
+        login_success, login_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.login, session, email
         )
         if not login_success:
@@ -431,7 +435,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 2. 完善资料
         await query.edit_message_text("✅ 登录成功，正在生成并完善随机资料...")
-        update_success, name = await context.application.loop.run_in_executor(
+        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
+        update_success, name = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.update_profile, session, phone
         )
         
@@ -441,7 +446,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 3. 下单
         await query.edit_message_text(f"✅ 资料已保存 (姓名: {name})\n⏳ 正在尝试下单...")
-        order_success, order_msg = await context.application.loop.run_in_executor(
+        # FIX: 使用 asyncio.get_running_loop() 替代 context.application.loop
+        order_success, order_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.place_order, session
         )
         
