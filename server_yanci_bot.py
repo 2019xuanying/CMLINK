@@ -277,6 +277,18 @@ class YanciBotLogic:
         if match:
             return match.group(1)
         return None
+    
+    @staticmethod
+    def extract_text_from_html(html_content):
+        """尝试从 HTML 中提取有用的提示信息"""
+        try:
+            alert_match = re.search(r"alert\(['\"](.*?)['\"]\)", html_content)
+            if alert_match:
+                return f"弹窗提示: {alert_match.group(1)}"
+            clean_text = re.sub('<[^<]+?>', '', html_content).strip()
+            return clean_text[:100].replace('\n', ' ')
+        except:
+            return "无法解析页面内容"
         
     @staticmethod
     def extract_esim_info(html_content):
