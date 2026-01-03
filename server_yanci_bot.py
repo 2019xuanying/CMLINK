@@ -100,45 +100,87 @@ class UserManager:
 
 user_manager = UserManager()
 
-# ================= 临时邮箱工具类 (1secmail) =================
-class OneSecMail:
-    BASE_URL = "https://www.1secmail.com/api/v1/"
+# ================= 临时邮箱工具类 (Mail.tm) =================
+class MailTm:
+    BASE_URL = "https://api.mail.tm"
 
     @staticmethod
-    def generate_email():
-        """生成一个随机邮箱"""
+    def create_account():
+        """创建临时账户，返回 (address, token)"""
         try:
-            # 获取可用域名列表
-            # resp = requests.get(f"{OneSecMail.BASE_URL}?action=getDomainList")
-            # domains = resp.json()
-            # domain = random.choice(domains)
-            # 指定常用域名，有时候 random 的会被墙
-            domain = "1secmail.com" 
+            # 1. 获取可用域名
+            domains_resp = requests.get(f"{MailTm.BASE_URL}/domains", timeout=10)
+            if domains_resp.status_code != 200:
+                logger.error(f"MailTm domains error: {domains_resp.status_code}")
+                return None, None
             
-            name = f"user{random.randint(100000, 999999)}"
-            email = f"{name}@{domain}"
-            return email, name, domain
+            domains_data = domains_resp.json().get('hydra:member', [])
+            if not domains_data:
+                logger.error("MailTm: No domains available")
+                return None, None
+            
+            domain = domains_data[0]['domain'] # 使用第一个可用域名
+
+            # 2. 生成随机账号密码
+            username = "".join(random.choices("abcdefghijklmnopqrstuvwxyz1234567890", k=10))
+            password = "".join(random.choices("abcdefghijklmnopqrstuvwxyz1234567890", k=12))
+            address = f"{username}@{domain}"
+
+            # 3. 注册账户
+            reg_resp = requests.post(
+                f"{MailTm.BASE_URL}/accounts", 
+                json={"address": address, "password": password},
+                timeout=10
+            )
+            if reg_resp.status_code != 201:
+                logger.error(f"MailTm register error: {reg_resp.text}")
+                return None, None
+
+            # 4. 获取 Token (登录)
+            token_resp = requests.post(
+                f"{MailTm.BASE_URL}/token",
+                json={"address": address, "password": password},
+                timeout=10
+            )
+            if token_resp.status_code != 200:
+                logger.error(f"MailTm token error: {token_resp.text}")
+                return None, None
+
+            token = token_resp.json().get('token')
+            return address, token
+
         except Exception as e:
-            logger.error(f"邮箱生成失败: {e}")
-            return None, None, None
+            logger.error(f"MailTm create_account exception: {e}")
+            return None, None
 
     @staticmethod
-    def check_inbox(login, domain):
-        """检查收件箱，返回邮件列表"""
+    def check_inbox(token):
+        """检查收件箱，需要 Token"""
+        if not token: return []
+        headers = {"Authorization": f"Bearer {token}"}
         try:
-            url = f"{OneSecMail.BASE_URL}?action=getMessages&login={login}&domain={domain}"
-            resp = requests.get(url, timeout=10)
-            return resp.json()
+            resp = requests.get(f"{MailTm.BASE_URL}/messages", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get('hydra:member', [])
+            return []
         except:
             return []
 
     @staticmethod
-    def get_message_content(login, domain, msg_id):
+    def get_message_content(token, msg_id):
         """获取邮件具体内容"""
+        if not token: return None
+        headers = {"Authorization": f"Bearer {token}"}
         try:
-            url = f"{OneSecMail.BASE_URL}?action=readMessage&login={login}&domain={domain}&id={msg_id}"
-            resp = requests.get(url, timeout=10)
-            return resp.json()
+            resp = requests.get(f"{MailTm.BASE_URL}/messages/{msg_id}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                # 优先返回 html，其次 text
+                body = data.get('html')
+                if not body:
+                    body = data.get('text', '')
+                return {'body': body, 'subject': data.get('subject', '')}
+            return None
         except:
             return None
 
@@ -231,7 +273,6 @@ class YanciBotLogic:
             info.append(f"🔑 **激活码**: `{code_match.group(1)}`")
             
         # 尝试提取二维码图片链接
-        # 注意：如果是附件形式，1secmail 需要额外处理下载，这里先只提取 src
         img_match = re.search(r'<img[^>]+src=["\']([^"\']+\.png|[^"\']+\.jpg)[^"\']*["\']', html_content)
         if img_match:
             # 过滤掉 icon 等无关图片，这里假设二维码比较大或者是特定的
@@ -311,7 +352,7 @@ class YanciBotLogic:
         """模拟点击验证链接"""
         try:
             headers = HEADERS_BASE.copy()
-            headers['Referer'] = 'https://www.1secmail.com/' # 模拟从邮箱跳转
+            headers['Referer'] = 'https://mail.tm/' # 模拟从邮箱跳转
             resp = session.get(link, headers=headers, timeout=20)
             if resp.status_code == 200:
                 return True, "验证链接访问成功"
@@ -391,8 +432,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = STATE_NONE 
     
     welcome_text = (
-        f"👋 **Yanci 全自动助手 (V14.0 托管版)**\n\n"
-        f"你好，{user.first_name}！\n此版本已集成临时邮箱，无需手动输入。\n\n"
+        f"👋 **Yanci 全自动助手 (V14.1 Mail.tm 版)**\n\n"
+        f"你好，{user.first_name}！\n此版本已升级至 Mail.tm 邮箱接口，稳定性更高。\n\n"
         f"🚀 **一键功能**：自动注册 -> 自动验证 -> 自动下单 -> 自动收货"
     )
     
@@ -476,18 +517,19 @@ async def run_auto_task(query, context, user):
     """全自动任务核心逻辑"""
     
     # 1. 初始化 & 生成邮箱
-    await query.edit_message_text("🏗 **正在初始化环境...**\n⏳ 正在申请临时邮箱...")
+    await query.edit_message_text("🏗 **正在初始化环境...**\n⏳ 正在申请临时邮箱 (Mail.tm)...")
     
-    email, mail_login, mail_domain = OneSecMail.generate_email()
-    if not email:
-        await query.edit_message_text("❌ 临时邮箱服务暂时不可用，请稍后再试。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="main_menu")]]))
+    # 修改点：适配 Mail.tm，直接获取 token
+    email, mail_token = MailTm.create_account()
+    if not email or not mail_token:
+        await query.edit_message_text("❌ 临时邮箱创建失败，请稍后再试。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="main_menu")]]))
         return
         
     phone = YanciBotLogic.generate_taiwan_phone()
     user_manager.increment_usage(user.id, user.first_name)
     
     msg_status = await query.edit_message_text(
-        f"🚀 **任务启动 (托管模式)**\n\n"
+        f"🚀 **任务启动 (Mail.tm 托管)**\n\n"
         f"📧 临时邮箱: `{email}`\n"
         f"📱 虚拟手机: `{phone}`\n"
         f"⏳ **正在连接服务器...**", 
@@ -526,15 +568,15 @@ async def run_auto_task(query, context, user):
         start_time = time.time()
         
         while time.time() - start_time < 120:
-            # 检查邮件
-            mails = await asyncio.get_running_loop().run_in_executor(None, OneSecMail.check_inbox, mail_login, mail_domain)
+            # 检查邮件 (使用 token)
+            mails = await asyncio.get_running_loop().run_in_executor(None, MailTm.check_inbox, mail_token)
             
             if mails:
                 for mail in mails:
                     # 判断标题是否相关
                     if "驗證" in mail.get('subject', '') or "Verify" in mail.get('subject', '') or "验证" in mail.get('subject', ''):
-                        # 读取邮件详情
-                        mail_detail = await asyncio.get_running_loop().run_in_executor(None, OneSecMail.get_message_content, mail_login, mail_domain, mail.get('id'))
+                        # 读取邮件详情 (使用 token 和 id)
+                        mail_detail = await asyncio.get_running_loop().run_in_executor(None, MailTm.get_message_content, mail_token, mail.get('id'))
                         if mail_detail:
                             # 提取链接
                             link = YanciBotLogic.extract_verification_link(mail_detail.get('body', ''))
@@ -603,15 +645,16 @@ async def run_auto_task(query, context, user):
         wait_mail_start = time.time()
         
         while time.time() - wait_mail_start < 300: # 5分钟等待
-            mails = await asyncio.get_running_loop().run_in_executor(None, OneSecMail.check_inbox, mail_login, mail_domain)
+            # 检查邮件 (使用 token)
+            mails = await asyncio.get_running_loop().run_in_executor(None, MailTm.check_inbox, mail_token)
             if mails:
                 for mail in mails:
                     # 排除掉之前的验证邮件，找新的订单邮件
                     subject = mail.get('subject', '')
                     # 关键词匹配：订单, order, 开通, eSIM
                     if any(k in subject for k in ["訂單", "Order", "開通", "eSIM", "成功"]):
-                        # 读取详情
-                        mail_detail = await asyncio.get_running_loop().run_in_executor(None, OneSecMail.get_message_content, mail_login, mail_domain, mail.get('id'))
+                        # 读取详情 (使用 token)
+                        mail_detail = await asyncio.get_running_loop().run_in_executor(None, MailTm.get_message_content, mail_token, mail.get('id'))
                         if mail_detail:
                             # 提取激活码
                             info_text = YanciBotLogic.extract_esim_info(mail_detail.get('body', ''))
@@ -638,7 +681,7 @@ async def run_auto_task(query, context, user):
                 f"📧 账户: `{email}`\n"
                 f"🔑 密码: `{FIXED_PASSWORD}`\n\n"
                 f"发货可能延迟，请稍后手动登录邮箱或扬奇官网查看。\n"
-                f"临时邮箱查询地址: https://www.1secmail.com/mailbox"
+                f"由于是随机密码，建议立刻去官网取回。"
             )
 
         # 发送新消息告知结果
@@ -686,5 +729,5 @@ if __name__ == '__main__':
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_input))
     
-    print("🤖 Yanci Auto Bot (1secmail) 已启动...")
+    print("🤖 Yanci Auto Bot (Mail.tm) 已启动...")
     application.run_polling()
