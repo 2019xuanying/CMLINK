@@ -252,11 +252,48 @@ class YanciBotLogic:
         payload = {'given': PRODUCT_ID, 'giveq': '1'}
         try:
             resp = session.post(URLS['order'], headers=headers, data=payload, timeout=20)
+            
+            # --- 增加详细日志记录 ---
+            logger.info(f"[下单调试] 状态码: {resp.status_code}")
+            logger.info(f"[下单调试] URL: {resp.url}")
+            # 记录一部分响应内容，防止日志过长
+            content_snippet = resp.text[:500].replace("\n", " ")
+            logger.info(f"[下单调试] 响应内容摘要: {content_snippet}")
+
             if resp.status_code == 200:
-                if "登入" in resp.text: return False, "会话失效"
+                # 检查多种失败特征
+                resp.encoding = 'utf-8' # 确保中文正常
+                text = resp.text
+                
+                # 1. 检查是否重定向到了登录页 (HTML 页面特征)
+                if "<!DOCTYPE html>" in text or "<html" in text:
+                    # 尝试提取 Title
+                    title_match = re.search(r'<title>(.*?)</title>', text, re.IGNORECASE)
+                    page_title = title_match.group(1) if title_match else "未知页面"
+                    
+                    if "登入" in page_title or "Login" in page_title or "登入" in text:
+                        return False, f"会话失效 (Title: {page_title}, URL: {resp.url})"
+                    
+                    # 提取部分正文用于提示
+                    clean_text = re.sub(r'<[^>]+>', '', text).strip()[:100]
+                    return False, f"返回了HTML页面: {page_title} - {clean_text}"
+
+                # 2. 尝试解析 JSON 错误 (如果服务器返回 JSON)
+                try:
+                    res_json = resp.json()
+                    if isinstance(res_json, list) and len(res_json) > 0:
+                        data = res_json[0]
+                        if str(data.get('code')) != '200':
+                             return False, f"API错误: {data.get('msg', '未知错误')}"
+                except:
+                    pass
+
+                # 3. 如果以上都没拦截，姑且认为成功
                 return True, "下单请求已发送"
-            return False, f"HTTP {resp.status_code}"
-        except Exception as e: return False, str(e)
+            
+            return False, f"HTTP异常 {resp.status_code}"
+        except Exception as e:
+            return False, f"程序异常: {str(e)}"
 
 
 # ================= Bot Handlers: 主菜单 =================
