@@ -8,6 +8,7 @@ import os
 import sys
 import traceback
 import asyncio
+from urllib.parse import unquote, urlparse, parse_qs
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -46,13 +47,16 @@ class UserManager:
 
     def _load(self):
         if not os.path.exists(self.FILE_PATH):
-            return {"users": {}}
+            return {"users": {}, "config": {"send_qr": True}} # 默认配置
         try:
             with open(self.FILE_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+                if "config" not in data:
+                    data["config"] = {"send_qr": True}
+                return data
         except Exception as e:
             logger.error(f"加载数据失败: {e}")
-            return {"users": {}}
+            return {"users": {}, "config": {"send_qr": True}}
 
     def _save(self):
         try:
@@ -97,6 +101,14 @@ class UserManager:
 
     def get_all_stats(self):
         return self.data["users"]
+    
+    # --- 配置相关 ---
+    def get_config(self, key, default=None):
+        return self.data["config"].get(key, default)
+
+    def set_config(self, key, value):
+        self.data["config"][key] = value
+        self._save()
 
 user_manager = UserManager()
 
@@ -111,15 +123,13 @@ class MailTm:
             # 1. 获取可用域名
             domains_resp = requests.get(f"{MailTm.BASE_URL}/domains", timeout=10)
             if domains_resp.status_code != 200:
-                logger.error(f"MailTm domains error: {domains_resp.status_code}")
                 return None, None
             
             domains_data = domains_resp.json().get('hydra:member', [])
             if not domains_data:
-                logger.error("MailTm: No domains available")
                 return None, None
             
-            domain = domains_data[0]['domain'] # 使用第一个可用域名
+            domain = domains_data[0]['domain'] 
 
             # 2. 生成随机账号密码
             username = "".join(random.choices("abcdefghijklmnopqrstuvwxyz1234567890", k=10))
@@ -133,7 +143,6 @@ class MailTm:
                 timeout=10
             )
             if reg_resp.status_code != 201:
-                logger.error(f"MailTm register error: {reg_resp.text}")
                 return None, None
 
             # 4. 获取 Token (登录)
@@ -143,7 +152,6 @@ class MailTm:
                 timeout=10
             )
             if token_resp.status_code != 200:
-                logger.error(f"MailTm token error: {token_resp.text}")
                 return None, None
 
             token = token_resp.json().get('token')
@@ -178,8 +186,19 @@ class MailTm:
                 # 优先返回 html，其次 text
                 body = data.get('html')
                 if not body:
-                    body = data.get('text', '')
-                return {'body': body, 'subject': data.get('subject', '')}
+                    body = data.get('text')
+                
+                # 强制转换为字符串，防止 None
+                if body is None:
+                    body = ""
+                elif not isinstance(body, str):
+                    body = str(body)
+
+                subject = data.get('subject')
+                if subject is None:
+                    subject = ""
+                
+                return {'body': body, 'subject': str(subject)}
             return None
         except:
             return None
@@ -252,34 +271,62 @@ class YanciBotLogic:
     @staticmethod
     def extract_verification_link(html_content):
         """从邮件HTML中提取验证链接"""
-        # 寻找包含 checkreg 或类似结构的链接
-        match = re.search(r'(https?://www\.yanci\.com\.tw/checkreg[^\s"\'<>]+)', html_content)
+        if not html_content or not isinstance(html_content, str):
+            return None
+        match = re.search(r'(https?://www\.yanci\.com\.tw/sendvcurl[^\s"\'<>]+)', html_content)
         if match:
             return match.group(1)
         return None
         
     @staticmethod
     def extract_esim_info(html_content):
-        """从邮件中提取激活码或二维码图片"""
-        info = []
-        # 尝试提取 LPA 码
-        lpa_match = re.search(r'(LPA:1\$[a-zA-Z0-9\.\-]+\$[a-zA-Z0-9]+)', html_content)
-        if lpa_match:
-            info.append(f"📡 **LPA 激活码**: `{lpa_match.group(1)}`")
+        """从邮件中智能提取 LPA、激活码和二维码链接"""
+        if not html_content or not isinstance(html_content, str):
+            return None
+
+        info = {}
+
+        # 1. 提取 SM-DP+ Address 和 激活码
+        # 使用非贪婪匹配和忽略标签的模式来穿透 HTML
+        # 匹配 【SM-DP+Address】 后面的所有标签和空白，直到捕获非标签内容
+        sm_dp_match = re.search(r'【SM-DP\+Address】(?:[\s\n<[^>]+>]*)([\w\.\-]+)', html_content)
+        code_match = re.search(r'【啟用碼】(?:[\s\n<[^>]+>]*)([\w\-]+)', html_content)
+
+        if sm_dp_match and code_match:
+            sm_dp = sm_dp_match.group(1).strip()
+            code = code_match.group(1).strip()
+            # 拼接标准 LPA 格式
+            info['lpa_str'] = f"LPA:1${sm_dp}${code}"
+            info['address'] = sm_dp
+            info['code'] = code
+
+        # 2. 提取二维码图片链接 (优先找 quickchart)
+        qr_match = re.search(r'(https?://quickchart\.io/qr\?[^"\'\s>]+)', html_content)
+        if qr_match:
+            # 清理 URL 中的 HTML 实体
+            info['qr_url'] = qr_match.group(1).replace('&amp;', '&')
         
-        # 尝试提取纯数字/字母激活码 (根据扬奇的格式调整)
-        code_match = re.search(r'激活碼[：:]\s*([A-Za-z0-9]+)', html_content)
-        if code_match:
-            info.append(f"🔑 **激活码**: `{code_match.group(1)}`")
-            
-        # 尝试提取二维码图片链接
-        img_match = re.search(r'<img[^>]+src=["\']([^"\']+\.png|[^"\']+\.jpg)[^"\']*["\']', html_content)
-        if img_match:
-            # 过滤掉 icon 等无关图片，这里假设二维码比较大或者是特定的
-            if "logo" not in img_match.group(1):
-                info.append(f"🖼 **可能的二维码链接**: {img_match.group(1)}")
-                
-        return "\n".join(info)
+        # 3. 如果没找到 quickchart，尝试通用的 img src 匹配 (作为备用)
+        if 'qr_url' not in info:
+             # 排除 icon, banner, footer, logo 等干扰项
+             img_candidates = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content)
+             for img_url in img_candidates:
+                 if not any(k in img_url for k in ['icon', 'banner', 'footer', 'logo']):
+                     if 'qr' in img_url.lower() or 'code' in img_url.lower():
+                         info['qr_url'] = img_url
+                         break
+
+        # 4. 如果第1步失败，尝试从 quickchart URL 中反解 LPA
+        if 'lpa_str' not in info and 'qr_url' in info:
+            try:
+                parsed = urlparse(info['qr_url'])
+                qs = parse_qs(parsed.query)
+                if 'text' in qs:
+                    info['lpa_str'] = qs['text'][0]
+            except:
+                pass
+
+        return info if info else None
 
     @staticmethod
     def get_initial_session():
@@ -432,9 +479,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = STATE_NONE 
     
     welcome_text = (
-        f"👋 **Yanci 全自动助手 (V14.1 Mail.tm 版)**\n\n"
-        f"你好，{user.first_name}！\n此版本已升级至 Mail.tm 邮箱接口，稳定性更高。\n\n"
-        f"🚀 **一键功能**：自动注册 -> 自动验证 -> 自动下单 -> 自动收货"
+        f"👋 **Yanci 全自动助手**\n\n"
+        f"你好，{user.first_name}！\n\n"
+        f"🚀 **一键功能**：自动注册 -> 自动验证 -> 自动下单 -> 自动提取 eSIM"
     )
     
     keyboard = [
@@ -469,7 +516,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("🚫 无权访问。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="main_menu")]]))
             return
         
-        # 启动后台异步任务，不阻塞 Bot 响应
         asyncio.create_task(run_auto_task(query, context, user))
         return
 
@@ -481,13 +527,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "btn_admin_menu":
         if user.id != ADMIN_ID: return
         context.user_data['state'] = STATE_NONE
+        
+        # 获取当前发图设置
+        send_qr = user_manager.get_config("send_qr", True)
+        qr_status = "✅ 开启" if send_qr else "🔴 关闭"
+        
         keyboard = [
-            [InlineKeyboardButton("✅ 授权用户", callback_data="admin_add")],
-            [InlineKeyboardButton("🚫 移除用户", callback_data="admin_del")],
+            [InlineKeyboardButton("✅ 授权用户", callback_data="admin_add"), InlineKeyboardButton("🚫 移除用户", callback_data="admin_del")],
+            [InlineKeyboardButton(f"🖼 发图设置: {qr_status}", callback_data="admin_toggle_qr")],
             [InlineKeyboardButton("📊 查看统计", callback_data="admin_stats")],
             [InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu")]
         ]
         await query.edit_message_text("👮 **管理面板**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return
+    
+    if data == "admin_toggle_qr":
+        if user.id != ADMIN_ID: return
+        current = user_manager.get_config("send_qr", True)
+        new_state = not current
+        user_manager.set_config("send_qr", new_state)
+        
+        # 刷新界面
+        qr_status = "✅ 开启" if new_state else "🔴 关闭"
+        keyboard = [
+            [InlineKeyboardButton("✅ 授权用户", callback_data="admin_add"), InlineKeyboardButton("🚫 移除用户", callback_data="admin_del")],
+            [InlineKeyboardButton(f"🖼 发图设置: {qr_status}", callback_data="admin_toggle_qr")],
+            [InlineKeyboardButton("📊 查看统计", callback_data="admin_stats")],
+            [InlineKeyboardButton("🔙 返回主菜单", callback_data="main_menu")]
+        ]
+        await query.edit_message_text("👮 **管理面板**\n设置已更新。", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
         
     if data == "admin_stats":
@@ -516,10 +584,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def run_auto_task(query, context, user):
     """全自动任务核心逻辑"""
     
-    # 1. 初始化 & 生成邮箱
     await query.edit_message_text("🏗 **正在初始化环境...**\n⏳ 正在申请临时邮箱 (Mail.tm)...")
     
-    # 修改点：适配 Mail.tm，直接获取 token
     email, mail_token = MailTm.create_account()
     if not email or not mail_token:
         await query.edit_message_text("❌ 临时邮箱创建失败，请稍后再试。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="main_menu")]]))
@@ -529,21 +595,18 @@ async def run_auto_task(query, context, user):
     user_manager.increment_usage(user.id, user.first_name)
     
     msg_status = await query.edit_message_text(
-        f"🚀 **任务启动 (Mail.tm 托管)**\n\n"
-        f"📧 临时邮箱: `{email}`\n"
-        f"📱 虚拟手机: `{phone}`\n"
+        f"🚀 **任务启动**\n\n"
+        f"📧 `{email}`\n"
         f"⏳ **正在连接服务器...**", 
         parse_mode='Markdown'
     )
 
     try:
-        # 2. 获取 Session
         session, verify_id, init_msg = await asyncio.get_running_loop().run_in_executor(None, YanciBotLogic.get_initial_session)
         if not session:
             await msg_status.edit_text(f"❌ 初始化失败: {init_msg}")
             return
 
-        # 3. 注册
         await msg_status.edit_text(f"✅ 获取ID: {verify_id}\n⏳ **正在提交注册请求...**")
         reg_success, final_id, reg_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.register_loop, session, email, phone, verify_id
@@ -552,7 +615,6 @@ async def run_auto_task(query, context, user):
             await msg_status.edit_text(f"❌ 注册被拒: {reg_msg}")
             return
 
-        # 4. 发送验证邮件
         await msg_status.edit_text(f"✅ 注册请求已通过\n⏳ **正在触发验证邮件...**")
         send_success, send_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.send_verify_email, session, final_id
@@ -561,39 +623,29 @@ async def run_auto_task(query, context, user):
             await msg_status.edit_text(f"❌ 发信失败: {send_msg}")
             return
 
-        # 5. 循环监听邮件 (最多等待 120 秒)
         await msg_status.edit_text(f"📩 **验证信已发送！**\n⏳ 正在自动监听邮箱 (最多等2分钟)...")
         
         verification_link = None
         start_time = time.time()
         
         while time.time() - start_time < 120:
-            # 检查邮件 (使用 token)
             mails = await asyncio.get_running_loop().run_in_executor(None, MailTm.check_inbox, mail_token)
-            
             if mails:
                 for mail in mails:
-                    # 判断标题是否相关
                     if "驗證" in mail.get('subject', '') or "Verify" in mail.get('subject', '') or "验证" in mail.get('subject', ''):
-                        # 读取邮件详情 (使用 token 和 id)
                         mail_detail = await asyncio.get_running_loop().run_in_executor(None, MailTm.get_message_content, mail_token, mail.get('id'))
                         if mail_detail:
-                            # 提取链接
                             link = YanciBotLogic.extract_verification_link(mail_detail.get('body', ''))
                             if link:
                                 verification_link = link
                                 break
-            
-            if verification_link:
-                break
-            
-            await asyncio.sleep(4) # 每4秒轮询一次
+            if verification_link: break
+            await asyncio.sleep(4)
 
         if not verification_link:
             await msg_status.edit_text("❌ 等待超时，未收到验证邮件。任务终止。")
             return
 
-        # 6. 点击验证链接
         await msg_status.edit_text(f"🔎 **捕获到验证链接！**\n⏳ 正在模拟点击验证...")
         visit_success, visit_msg = await asyncio.get_running_loop().run_in_executor(
             None, YanciBotLogic.visit_verification_link, session, verification_link
@@ -603,25 +655,20 @@ async def run_auto_task(query, context, user):
             await msg_status.edit_text(f"❌ 验证链接访问失败: {visit_msg}")
             return
 
-        # 7. 登录 & 完善资料 & 下单
         await msg_status.edit_text(f"✅ 邮箱验证通过！\n⏳ **正在登录并自动下单...**")
         
-        # 登录
         login_success, login_msg = await asyncio.get_running_loop().run_in_executor(None, YanciBotLogic.login, session, email)
         if not login_success:
             await msg_status.edit_text(f"❌ 登录失败: {login_msg}")
             return
             
-        # 完善资料
         update_success, name = await asyncio.get_running_loop().run_in_executor(None, YanciBotLogic.update_profile, session, phone)
         if not update_success:
             await msg_status.edit_text("❌ 资料保存失败。")
             return
 
-        # 下单
         order_success, order_msg = await asyncio.get_running_loop().run_in_executor(None, YanciBotLogic.place_order, session)
         
-        # 自动重试逻辑
         if not order_success and ("登入" in order_msg or "失效" in order_msg):
              await msg_status.edit_text("⚠️ 会话闪断，正在重连...")
              relogin_success, _ = await asyncio.get_running_loop().run_in_executor(None, YanciBotLogic.login, session, email)
@@ -632,60 +679,64 @@ async def run_auto_task(query, context, user):
              await msg_status.edit_text(f"❌ 下单最终失败: {order_msg}")
              return
 
-        # 8. 成功下单，等待发货邮件 (新功能)
         await msg_status.edit_text(
             f"🎉 **下单成功！**\n"
-            f"👤 姓名: {name}\n"
             f"📧 邮箱: `{email}`\n"
-            f"⏳ **正在等待发货邮件提取激活码...**\n(您可以现在离开，结果会稍后发送)"
+            f"⏳ **正在等待发货邮件 (最多5分钟)...**\n(请勿关闭此对话)"
         , parse_mode='Markdown')
         
-        # 继续监听邮件 (最多等 5 分钟)
-        esim_info = None
+        esim_data = None
         wait_mail_start = time.time()
         
-        while time.time() - wait_mail_start < 300: # 5分钟等待
-            # 检查邮件 (使用 token)
+        while time.time() - wait_mail_start < 300: 
             mails = await asyncio.get_running_loop().run_in_executor(None, MailTm.check_inbox, mail_token)
             if mails:
                 for mail in mails:
-                    # 排除掉之前的验证邮件，找新的订单邮件
                     subject = mail.get('subject', '')
-                    # 关键词匹配：订单, order, 开通, eSIM
-                    if any(k in subject for k in ["訂單", "Order", "開通", "eSIM", "成功"]):
-                        # 读取详情 (使用 token)
+                    if any(k in subject for k in ["訂單", "Order", "開通", "eSIM", "成功", "QR code"]):
                         mail_detail = await asyncio.get_running_loop().run_in_executor(None, MailTm.get_message_content, mail_token, mail.get('id'))
                         if mail_detail:
-                            # 提取激活码
-                            info_text = YanciBotLogic.extract_esim_info(mail_detail.get('body', ''))
-                            if info_text:
-                                esim_info = info_text
+                            extracted = YanciBotLogic.extract_esim_info(mail_detail.get('body', ''))
+                            if extracted and extracted.get('lpa_str'):
+                                esim_data = extracted
                                 break
-            
-            if esim_info:
-                break
+            if esim_data: break
             await asyncio.sleep(5)
 
         # 最终结果推送
-        if esim_info:
+        if esim_data:
+            lpa_str = esim_data.get('lpa_str', '未知')
+            
+            # 发送文本信息
             final_text = (
                 f"✅ **eSIM 自动提取成功！**\n\n"
+                f"📡 **LPA 激活串**: \n`{lpa_str}`\n\n"
                 f"📧 账户: `{email}`\n"
                 f"🔑 密码: `{FIXED_PASSWORD}`\n\n"
-                f"{esim_info}\n\n"
                 f"祝您使用愉快！"
             )
+            await context.bot.send_message(chat_id=user.id, text=final_text, parse_mode='Markdown')
+            
+            # 检查是否需要发送图片
+            send_qr_setting = user_manager.get_config("send_qr", True)
+            qr_url = esim_data.get('qr_url')
+            
+            if send_qr_setting and qr_url:
+                try:
+                    await context.bot.send_photo(chat_id=user.id, photo=qr_url, caption="📷 eSIM 二维码")
+                except Exception as e:
+                    logger.error(f"发图失败: {e}")
+                    await context.bot.send_message(chat_id=user.id, text="⚠️ 图片发送失败，请使用上方的 LPA 码激活。")
+                    
         else:
             final_text = (
                 f"✅ **任务完成 (但未捕获到发货邮件)**\n\n"
                 f"📧 账户: `{email}`\n"
                 f"🔑 密码: `{FIXED_PASSWORD}`\n\n"
                 f"发货可能延迟，请稍后手动登录邮箱或扬奇官网查看。\n"
-                f"由于是随机密码，建议立刻去官网取回。"
+                f"建议立刻去官网取回。"
             )
-
-        # 发送新消息告知结果
-        await context.bot.send_message(chat_id=user.id, text=final_text, parse_mode='Markdown')
+            await context.bot.send_message(chat_id=user.id, text=final_text, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(traceback.format_exc())
@@ -699,7 +750,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == STATE_NONE: return
 
-    # === 管理员操作 ===
     if state == STATE_WAIT_ADD_ID:
         if user.id != ADMIN_ID: return
         context.user_data['state'] = STATE_NONE
@@ -729,5 +779,5 @@ if __name__ == '__main__':
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_input))
     
-    print("🤖 Yanci Auto Bot (Mail.tm) 已启动...")
+    print("🤖 Yanci Auto Bot (Mail.tm + LPA Parser) 已启动...")
     application.run_polling()
