@@ -60,22 +60,40 @@ fi
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
 
-# 5. 配置 Bot Token
-echo "[5/6] 配置机器人 Token..."
+# 5. 配置 Bot Token 和 管理员 ID
+echo "[5/6] 配置机器人参数..."
 ENV_FILE=".env"
 
-# 交互式输入 Token
 if [ -f "$ENV_FILE" ]; then
-    echo "      检测到现有配置，保留原 Token。"
+    echo "      ⚠️ 检测到现有配置文件 (.env)。"
+    echo "      跳过配置录入，将继续使用旧配置。"
+    echo "      (如果想重置，请先运行: rm $INSTALL_DIR/.env)"
 else
-    echo "👉 请输入你的 Telegram Bot Token (从 BotFather 获取):"
+    # --- 录入 Token ---
+    echo ""
+    echo "👉 [1/2] 请输入你的 Telegram Bot Token (从 BotFather 获取):"
     read -r input_token
     if [[ -z "$input_token" ]]; then
         echo "❌ Token 不能为空！"
         exit 1
     fi
+
+    # --- 录入 Admin ID ---
+    echo ""
+    echo "👉 [2/2] 请输入管理员的 Telegram ID (用于管理权限，必须是数字):"
+    echo "   (如果你不知道自己的 ID，可以先在 TG 上搜 @userinfobot 获取)"
+    read -r input_admin_id
+    
+    # 简单的数字校验
+    if ! [[ "$input_admin_id" =~ ^[0-9]+$ ]]; then
+        echo "❌ 错误：管理员 ID 必须是纯数字！"
+        exit 1
+    fi
+
+    # --- 写入配置 ---
     echo "TG_BOT_TOKEN=$input_token" > "$ENV_FILE"
-    echo "      ✅ Token 已保存。"
+    echo "TG_ADMIN_ID=$input_admin_id" >> "$ENV_FILE"
+    echo "      ✅ 配置已保存到 .env"
 fi
 
 # 6. 配置 Systemd 服务
