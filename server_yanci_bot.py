@@ -277,7 +277,7 @@ class YanciBotLogic:
         if match:
             return match.group(1)
         return None
-    
+
     @staticmethod
     def extract_text_from_html(html_content):
         """尝试从 HTML 中提取有用的提示信息"""
@@ -491,7 +491,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = STATE_NONE 
     
     welcome_text = (
-        f"👋 **Yanci 全自动助手**\n\n"
+        f"👋 **Yanci 全自动助手 (V14.3 Pro)**\n\n"
         f"你好，{user.first_name}！\n\n"
         f"🚀 **一键功能**：自动注册 -> 自动验证 -> 自动下单 -> 自动提取 eSIM"
     )
